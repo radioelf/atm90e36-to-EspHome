@@ -1,0 +1,689 @@
+# WT32-ETH01
+#    GPIO  0: Modo de reloj para el bus RMII LAN8720 ->debe ser LOW para entrar en modo de arranque -BOOT
+#    GPIO  1: TXD 
+#    GPIO  2: LED estado  ->debe estar flotante o LOW durante el arranque -BOOT
+#    GPIO  3: RXD 
+#    GPIO  4: I2C SDA
+#    GPIO  5: I2C SCL -HIGH durante el reinicio ->debe estar HIGH durante el arranque -BOOT
+#    GPIO  6, 7, 8, 9, 10, Y 11  (SPI chip flash) (6-11 -HIGH durante el reinicio) *
+# Ejecutar espefuse.py set_flash_voltage 3.3V para power 3v3 VDD SDIO y liberar GPIO12
+#    GPIO 12: MISO (Master In Slave Out) atm90e36 -HIGH durante el reinicio ->debe estar en estado ALTO durante el arranque -BOOT
+#    GPIO 13: *
+#    GPIO 14: SCK (Serial Clock) atm90e36 -HIGH durante el reinicio
+#    GPIO 15: MOSI (Master Out Slave In) atm90e32 (debe ser LOW durante el arranque)
+#    GPIO 16: Power_pin del LAN8720 *
+#    GPIO 17: CS1 (Slave Select) atm90e36
+#    GPIO 18: Datos de gestión LAN8720 *
+#    GPIO 19: TXD[0] bus RMII LAN8720 *
+#    GPIO 21: TX_EN bus RMII LAN8720 *
+#    GPIO 22: TXD[1] bus RMII LAN8720 *
+#    GPIO 23: Control de datos de gestión LAN8720 *
+#    GPIO 25: RXD[0] bus RMII LAN8720 *
+#    GPIO 26: RXD[1] bus RMII LAN8720 *
+#    GPIO 27: CRS_DV bus RMII LAN8720 *
+#    GPIO 32: ISR  as3935
+#    GPIO 33: CS2 (Slave Select) atm90e32 (segundo)
+#    GPIO 34: * (SOLO input) NO soporta Pull-Up
+#    GPIO 35: Contador pulsos caudalímetro (SOLO input) NO soporta Pull-Up
+#    GPIO 36: ADC medidor presión. NO soporta Pull-Up
+#    GPIO 39: Entrada llamada interfono (SOLO input) NO soporta Pull-Up 
+# * NO ACCESIBLES EN EL MODULO WT32-ETH01
+#
+# Descripciones de Registros TCA9554
+# El registro de Puerto de Entrada (registro 0) refleja los niveles lógicos entrantes de los pines,
+# independientemente de si el pin está definido como entrada o salida por el registro de Configuración.
+# Solo actúa en la operación de lectura. Las escrituras en estos registros no tienen ningún efecto. 
+# El valor predeterminado, X, se determina por el nivel lógico aplicado externamente. Ver Tabla 
+# Register 0 (Input Port Register)
+# BIT     I7 I6 I5 I4 I3 I2 I1 I0
+# DEFAULT X  X  X  X  X  X  X  X
+# Antes de una operación de lectura, se envía una transmisión de escritura con el byte de comando 
+# para indicarle al dispositivo I2C que se accederá a continuación al registro de Puerto de Entrada.
+# El registro de Puerto de Salida (registro 1) muestra los niveles lógicos salientes de los pines 
+# definidos como salidas por el registro de Configuración. Los valores de los bits en este registro
+# no tienen efecto en los pines definidos como entradas.
+# A su vez, las lecturas de este registro reflejan el valor que está en el flip-flop que controla 
+# la selección de salida, no el valor real del pin. Ver Tabla
+# Register 1 (Output Port Register) 
+# BIT     O7 O6 O5 O4 O3 O2 O1 O0
+# DEFAULT 1  1  1  1  1  1  1  1
+# El registro de Inversión de Polaridad (registro 2) permite la inversión de polaridad de los pines
+# definidos como entradas por el registro de Configuración. Si un bit en este registro está configurado
+# (escrito con 1), la polaridad del pin del puerto correspondiente se invierte. Si un bit en este registro
+# se borra (escrito con un 0), se conserva la polaridad original del pin del puerto. Ver Tabla 
+# Register 2 (Polarity Inversion Register) 
+# BIT     N7 N6 N5 N4 N3 N2 N1 N0
+# DEFAULT 0  0  0  0  0  0  0  0
+# El registro de Configuración (registro 3) define la dirección de los pines de E/S (Entrada/Salida). 
+# Si un bit en este registro se establece a 1, el pin del puerto correspondiente se habilita como una
+# entrada con un controlador de salida de alta impedancia. Si un bit en este registro se borra a 0, 
+# el pin del puerto correspondiente se habilita como una salida. Ver Tabla
+# Register 3 (Configuration Register) 
+# BIT     C7 C6 C5 C4 C3 C2 C1 C0
+# DEFAULT 1  1  1  1  1  1  1  1
+
+# Información
+esphome:
+  name: monitor-power
+  friendly_name: monitor_power
+  project:
+    name: radioelf.monitor
+    version: "0.2.2_b"  
+
+# Tipo ESP32
+esp32:
+  board: esp32dev  # WT32-ETH01
+  framework:
+    type: arduino
+
+# Componente local para atm90e36
+external_components:
+  - source: ~/config/local_components/ # /local_components/atm90e36/atm90e36.cpp ...
+
+# Servidor WEB
+web_server:
+  port: 80
+
+# Módulo RS232 
+uart:
+  id: debug_serie
+  tx_pin: 1
+  rx_pin: 3
+  baud_rate: 115200
+  data_bits: 8
+  stop_bits: 1
+  parity: NONE
+
+# Logger
+logger:
+  level: ERROR # DEBUG 
+
+# Configuración para el bus I2C para TCA9554 y as3935
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: false
+  id: bus_i2c
+
+# Expansor dirección TCA9554A 0 1 1 1 A2 A1 A0 R/W -> 0111000 x (A0, A1 y A2 a GND)
+pca9554:
+    id: 'expand_gpio'
+    address: 0x38   # TCA9554A -> S-0111000 -R/W
+
+# Configuración para el bus SPI atm90e36
+spi:
+  clk_pin: GPIO14  # SCLK
+  miso_pin: GPIO12 # SDO
+  mosi_pin: GPIO15 # SDI
+  interface: software
+  id: spi_bus
+
+# Configuración LAN8720 WT32-ETH01 para el bus RMII
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23            # Pin de control de datos de gestión
+  mdio_pin: GPIO18           # Pin de datos de gestión
+  clk_mode: GPIO0_IN         # Modo de reloj para el bus RMII
+  phy_addr: 1                # Dirección PHY del dispositivo LAN8720
+  power_pin: GPIO16          # Pin de energía para el dispositivo LAN8720
+  manual_ip:                 # Configuración de IP manual
+    static_ip: 192.168.x.xx  # Dirección IP estática
+    gateway: 192.168.x.xx    # Puerta de enlace
+    subnet: 255.255.255.0    # Máscara de subred
+  id: ethernet_connection    # Identificador de la conexión Ethernet
+
+# Habilitamos Home Assistant API
+api:
+
+# Habilitamos OTA
+ota:
+  - platform: esphome
+
+# Globales
+globals:
+  - id: porcentaje_valvula
+    type: float
+    restore_value: false
+    initial_value: "50.0"
+
+# GPIO sensor tormenta A1 y A2 a VCC dirección 0x03
+as3935_i2c:
+  irq_pin: GPIO32      # No utilizar INPUT_PULLUP: el AS3935 pone del pin, al nivel alto si se registra un evento.
+  indoor: False        # En el exterior
+  noise_level: 1       # Nivel de ruido ambiental permitido (0-7). 1 es bajo, para minimizar falsas detecciones.
+  spike_rejection: 2   # Rechazo de picos de interferencia (0-9). Un valor de 2 es moderado.
+  mask_disturber: False # False permite registrar señales perturbadoras (por ejemplo, rayos cercanos).
+  watchdog_threshold: 2 # Umbral del watchdog (0-10). Un valor de 2 es sensible pero confiable.
+
+# GPIO led estado
+status_led:
+  pin: GPIO02
+
+# Botones
+button:
+  - platform: restart
+    name: "Restart ESP32"
+
+# Sensores información texto
+text_sensor:
+  - platform: ethernet_info
+    ip_address:
+      name: IP WT32-ETH01
+
+# Sensore binarios -entradas-
+binary_sensor:
+  - platform: as3935
+    name: "Tormenta alerta"
+    icon: "mdi:flash-alert"
+    id: tormenta_alerta
+  # Entradas GPIOs expansor TCA9554
+  - platform: gpio 
+    name: "Interfono llamada"
+    icon: "mdi:bell-circle-outline"
+    pin:
+      number: GPIO39
+      mode: INPUT
+      inverted: true # 0 ->llamando..
+    id: call_sensor
+    filters:
+      - delayed_off: 10s  # Convierte los pulsos en una señal limpia de 10s
+  - platform: gpio
+    name: "Válvula F.C cerrada"
+    icon: "mdi:valve-closed"
+    pin:
+      pca9554: expand_gpio
+      number: 6 
+      mode: INPUT
+      inverted: true # 1 ->abierta
+    id: fc_valvula_cerrada
+  - platform: gpio
+    name: "Válvula F.C abierta"
+    icon: "mdi:valve-open"
+    pin:
+      pca9554: expand_gpio
+      number: 7 
+      mode: INPUT
+      inverted: true # 1 ->cerrada
+    id: fc_valvula_abierta
+
+# Interruptores del expansor TCA9554 (relés)
+switch:
+  - platform: gpio
+    name: "válvula abrir"
+    id: relay_1
+    icon: "mdi:pipe-valve"
+    pin:
+      pca9554: expand_gpio
+      number: 0
+      mode:
+        output: true
+      inverted: false
+    interlock: [relay_2]
+    restore_mode: 'RESTORE_DEFAULT_OFF'
+    on_turn_on:                   # Acciones cuando el switch se enciende
+      - switch.turn_off: relay_2  # Apaga el relé 2 
+      - switch.turn_on: relay_1   # Enciende relé 1 para abrir la válvula
+      - lambda: |-
+            id(porcentaje_valvula) = 0.0;  // Porcentaje al 0% cerrada
+            id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+      - delay: 155s               # Espera 155 segundos
+      - switch.turn_off: relay_1  # Apaga el relé 1 para finalizar la apertura de la válvula
+      - lambda: |-
+          id(porcentaje_valvula) = 100.0;  // Porcentaje al 100% abierta
+          id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+  - platform: gpio
+    name: "Vávula cerrar"
+    id: relay_2
+    icon: "mdi:pipe-valve"
+    pin:
+      pca9554: expand_gpio
+      number: 1
+      mode:
+        output: true
+      inverted: false
+    interlock: [relay_1]
+    restore_mode: 'RESTORE_DEFAULT_OFF'
+    on_turn_on:                  # Acciones cuando el switch se enciende
+      - switch.turn_off: relay_1 # Apaga el relé 1 
+      - switch.turn_on: relay_2  # Enciende el relé 2 para cerrar válvula
+      - lambda: |-
+          id(porcentaje_valvula) = 100;  // Reinicia el porcentaje a 100% abierta
+          id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+      - delay: 155s              # Espera 155 segundos
+      - switch.turn_off: relay_2 # Apaga este relé 2 para finalizar el cierre de la válvula
+      - lambda: |-
+          id(porcentaje_valvula) = 0;  // Asegura que el porcentaje sea 0% al terminar de cerrar
+          id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+  - platform: gpio
+    name: "Relé modo Enphase"
+    id: rele_modo_enphase
+    pin:
+      pca9554: expand_gpio
+      number: 2
+      mode:
+        output: true
+      inverted: false
+    restore_mode: 'RESTORE_DEFAULT_OFF'
+  - platform: gpio
+    name: "Relé 4"
+    id: rele_auxiliar
+    pin:
+      pca9554: expand_gpio
+      number: 3
+      mode:
+        output: true
+      inverted: false
+    restore_mode: 'RESTORE_DEFAULT_OFF'
+      
+# Salidas GPIOs para leds estado de la válvula en el expansor TCA9554
+output:
+  - platform: gpio
+    pin:
+      pca9554: expand_gpio
+      number: 4
+    id: led_valvula_abierta
+    inverted: false
+  - platform: gpio
+    pin:
+      pca9554: expand_gpio
+      number: 5
+    id: led_valvula_cerrada
+    inverted: false
+
+# Definición de sustituciones para sensor atm90e36
+substitutions:
+  disp_name: ATM90E36-  # Nombre del dispositivo asociado a los sensores de corriente
+  update_time: 10s      # Intervalo de tiempo para la actualización de los sensores
+  current_cal: '27961'  # Calculo:  current_cal = (corriente leida / corrientre mostrada) * factor
+  voltage_cal: '13010'  #'12881'  # Calculo:  voltage_cal = (tensión leida / tensión mostrada) * factor 
+
+# Sensores
+sensor:
+  # Porcentaje de la posición de la válvula
+  - platform: template
+    name: "Apertura Válvula"
+    id: apertura_valvula_sensor
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    lambda: |-
+      return id(porcentaje_valvula);
+
+  # Configuración del sensor AS3935, detector de rayos (Descargas Eléctricas Atmosféricas)
+  - platform: as3935
+    lightning_energy:
+      id: as3935_energia_de_rayo
+      name: "AS3935 Energía de Rayo"
+      icon: "mdi:flash"
+    distance:
+      id: as3935_distancia_tormenta
+      name: "AS3935 Distancia Tormenta"    
+
+  # Lectura sensor presión ADC de 150Psi->10.34Bar (0.5-4,5V)
+  - platform: adc
+    pin: GPIO36      
+    id: presion_agua       
+    name: "Presión agua"
+    attenuation: 11db
+    update_interval: 20s
+    device_class: pressure
+    state_class: measurement
+    unit_of_measurement: bar
+    filters: 
+      # Aplicamos un filtro de media móvil para suavizar las lecturas
+      - sliding_window_moving_average:
+          window_size: 15
+          send_every: 5
+      - calibrate_linear: 
+        - 0.5 -> 0
+        - 2.5 -> 20   # - 2.5 -> 75
+        - 4.5 -> 90  # - 4.5 -> 150
+      - multiply: 0.06889 # 3.3v ->99Psi->6.82Bar presión máxima
+      # Filtro exponencial para suavizar aún más
+      # - exponential_moving_average:
+      #    alpha: 0.1
+      #    send_every: 5
+      # Redondeo para evitar decimales innecesarios
+      - lambda: return round(x * 100) / 100;
+      - clamp:
+         min_value: 0
+         
+  # Pulsos caudalímetro 1 pulso equivale a 0.05L (20 pulsos = 1litro)
+  - platform: pulse_meter
+    pin:
+      number: GPIO35
+      inverted: false
+    name: "Medidor pulsos agua"
+    id: "medidor_pulsos_agua"
+    unit_of_measurement: "L/min"
+    icon: "mdi:water"
+    timeout: 1s
+    accuracy_decimals: 2
+    # EDGE: Modo básico de detección de flancos
+    # DEFAULT: Filtrado básico de ruido
+    # PULSE: Detección avanzada de pulsos
+    # NO pulsos de menos de 13 microsegundos
+    internal_filter_mode: PULSE 
+    internal_filter: 13us
+    filters:
+      - lambda: return (x / 20.0);
+    total:
+      name: "Total consumo agua"
+      unit_of_measurement: "m³"
+      device_class: water
+      state_class: total_increasing
+      accuracy_decimals: 3
+      icon: "mdi:water"
+      filters:
+        - lambda: return (x / 20000.0);
+
+  # Configuración del sensor para el medidor de energía ATM90E36-1 con CT TA17L-04
+  # CT TA17L-04 corriente entrada 0-20A (max.36A), 1:2000, corriente de salida es de 10mA
+  - platform: atm90e36
+    cs_pin: 17    # Configuración del pin de chip select 
+    # Configuración para la fase A
+    phase_a:
+      voltage:
+        name: ${disp_name} Voltaje F-A  # Nombre de la entidad que representa el voltaje de la fase A
+        id: ic1Volts                # Identificador único para el voltaje de la fase A
+        accuracy_decimals: 1        # Precisión (número de decimales) para la medición del voltaje
+      current:
+        name: ${disp_name} CT1 Amperios # Nombre de la entidad que representa la corriente de la fase A
+        id: ct1Amps                 # Identificador único para la corriente de la fase A
+      power:
+        name: ${disp_name} CT1 Watios
+        id: ct1Watts
+      reactive_power:
+        name: ${disp_name} CT1 Reactiva 
+        id: ct1VAR
+      apparent_power:
+        name: ${disp_name} CT1 Aparente
+        id: ct1VA
+      power_factor:
+        name: ${disp_name} CT1 Factor Potencia 
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase A
+      gain_ct: ${current_cal}       # Factor de ganancia para la medición de corriente de la fase A
+    # Configuración para la fase B
+    phase_b:
+      current:
+        name: ${disp_name} CT2 Amperios
+        id: ct2Amps
+      power:
+        name: ${disp_name} CT2 Watios
+        id: ct2Watts
+      reactive_power:
+        name: ${disp_name} CT2 Reactiva
+        id: ct2VAR
+      apparent_power:
+        name: ${disp_name} CT2 Aparente
+        id: ct2VA
+      power_factor:
+        name: ${disp_name} CT2 Factor Potencia 
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase B
+      gain_ct: ${current_cal}
+      # Configuración para la fase C
+    phase_c:
+      current:
+        name: ${disp_name} CT3 Amperios
+        id: ct3Amps
+      power:
+        name: ${disp_name} CT3 Watios
+        id: ct3Watts
+      reactive_power:
+        name: ${disp_name} CT3 Reactiva
+        id: ct3VAR
+      apparent_power:
+        name: ${disp_name} CT3 Aparente
+        id: ct3VA
+      power_factor:
+        name: ${disp_name} CT3 Factor Potencia
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase C
+      gain_ct: ${current_cal}
+    # Configuración para la medición de la frecuencia
+    frequency:
+      name: ${disp_name} Freq. IC-1  # Nombre de la entidad que representa la frecuencia
+    line_frequency: 50Hz             # Frecuencia de la línea de alimentación eléctrica
+    gain_pga: 1X                     # Factor de ganancia para el amplificador de instrumentación (PGA)
+    update_interval: ${update_time}  # Intervalo de actualización para las lecturas del medidor de energía
+    chip_temperature:
+      name: ${disp_name} Temperatura IC-1
+  # Configuración del sensor para el medidor de energía ATM90E326-2
+  - platform: atm90e36
+    cs_pin: 33
+    # Configuración para la fase A
+    phase_a:
+      voltage:
+        name: ${disp_name} Voltaje F-B
+        id: ic2Volts
+        accuracy_decimals: 1
+      current:
+        name: ${disp_name} CT4 Amperios
+        id: ct4Amps
+      power:
+        name: ${disp_name} CT4 Watios
+        id: ct4Watts
+      reactive_power:
+        name: ${disp_name} CT4 Reactiva
+        id: ct4VAR
+      apparent_power:
+        name: ${disp_name} CT4 Aparente
+        id: ct4VA
+      power_factor:
+        name: ${disp_name} CT4 Factor Potencia
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase A
+      gain_ct: ${current_cal}
+     # Configuración para la fase B
+    phase_b:
+      current:
+        name: ${disp_name} CT5 Amperios
+        id: ct5Amps
+      power:
+        name: ${disp_name} CT5 Watios
+        id: ct5Watts
+      reactive_power:
+        name: ${disp_name} CT5 Reactiva
+        id: ct5VAR
+      apparent_power:
+        name: ${disp_name} CT5 Aparente
+        id: ct5VA
+      power_factor:
+        name: ${disp_name} CT5 Factor Potencia
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase A
+      gain_ct: ${current_cal}
+    # Configuración para la fase C
+    phase_c:
+      current:
+        name: ${disp_name} CT6 Amperios
+        id: ct6Amps
+      power:
+        name: ${disp_name} CT6 Watios
+        id: ct6Watts
+      reactive_power:
+        name: ${disp_name} CT6 Reactiva
+        id: ct6VAR
+      apparent_power:
+        name: ${disp_name} CT6 Aparente
+        id: ct6VA
+      power_factor:
+        name: ${disp_name} CT6 Factor Potencia
+      gain_voltage: ${voltage_cal}  # Factor de ganancia para la medición del voltaje de la fase A
+      gain_ct: ${current_cal}
+    # Configuración para la medición de la frecuencia
+    frequency:
+      name: ${disp_name} Freq. IC-2
+    line_frequency: 50Hz
+    gain_pga: 1X
+    update_interval: ${update_time}
+    chip_temperature:
+      name: ${disp_name} Temperatura IC-2
+   #Total Amps Se configura un sensor de plantilla para calcular la corriente total
+  - platform: template
+    name: ${disp_name} Total Amperios
+    id: totalAmps
+    # Se define la función lambda para calcular la corriente total sumando las corrientes de todas las fases (menos ct6 generación fotovoltaica si estamos produciendo)
+    lambda: |-
+        if (id(ct6Watts).state < 0.0) {
+          return id(ct1Amps).state + id(ct2Amps).state + id(ct3Amps).state + id(ct4Amps).state + id(ct5Amps).state + fabs(id(ct6Amps).state);
+        }
+        else {
+          return id(ct1Amps).state + id(ct2Amps).state + id(ct3Amps).state + id(ct4Amps).state + id(ct5Amps).state;
+        }
+    accuracy_decimals: 2
+    unit_of_measurement: A
+    icon: "mdi:meter-electric-outline"
+    update_interval: ${update_time}
+  #Total W Se configura un sensor de plantilla para calcular la potencia total aparente
+  - platform: template
+    name: ${disp_name} Total VA
+    id: totalVA
+    lambda: |-
+        if (id(ct6Watts).state < 0.0) {
+          return (id(ct1VA).state + id(ct2VA).state + id(ct3VA).state + id(ct4VA).state + id(ct5VA).state + id(ct6VA).state);
+        }
+        else {
+          return (id(ct1VA).state + id(ct2VA).state + id(ct3VA).state + id(ct4VA).state + id(ct5VA).state);
+        }
+    accuracy_decimals: 1
+    unit_of_measurement: VA
+    icon: "mdi:gauge"
+    update_interval: ${update_time}
+   #Total W Se configura un sensor de plantilla para calcular la potencia total
+  - platform: template
+    name: ${disp_name} Total W
+    id: totalWatts
+    lambda: |-
+        if (id(ct6Watts).state < 0.0) {
+          return (id(ct1Watts).state + id(ct2Watts).state + id(ct3Watts).state + id(ct4Watts).state + id(ct5Watts).state + id(ct6Watts).state);
+        }
+        else {
+          return (id(ct1Watts).state + id(ct2Watts).state + id(ct3Watts).state + id(ct4Watts).state + id(ct5Watts).state);
+        }
+    accuracy_decimals: 1
+    unit_of_measurement: W
+    icon: "mdi:gauge"
+    update_interval: ${update_time}
+  # Calculo total factor de potencia
+  - platform: template
+    name: ${disp_name} Factor de Potencia 
+    unit_of_measurement: FP
+    icon: "mdi:cosine-wave"
+    id: power_factor                      
+    # Se define la función lambda para calcular el factor de potencia, limitando su valor a 1 como máximo
+    lambda: return std::min(1.0f, float(id(totalWatts).state) / float(id(totalVA).state));
+    accuracy_decimals: 1
+    update_interval: ${update_time}
+  #kWh Se configura un sensor para calcular la energía total diaria consumida
+  - platform: total_daily_energy
+    name: ${disp_name} Total kWh
+    power_id: totalWatts
+    unit_of_measurement: kWh  
+    state_class: total_increasing # Se establece la clase de estado del sensor como "total_increasing" para representar el aumento continuo de la energía total
+    device_class: energy
+    accuracy_decimals: 3
+    # Se aplican filtros para transformar los datos de potencia de vatios a kilovatios
+    filters:
+      - multiply: 0.001
+
+# Script para borra el contador diario de litros de agua
+script:
+  - id: reset_litros_agua_dia
+    then:
+      - lambda: |-
+          id(medidor_pulsos_agua).publish_state(0);
+      
+# Configuración de tiempo desde Home Assistant para ejecutar el script a medianoche
+time:
+  - platform: homeassistant
+    id: homeassistant_time  # Identificador único para el componente de tiempo
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - script.execute: reset_litros_agua_dia
+ 
+interval:
+  - interval: 250ms
+    then:
+      # Verifica si el sensor de la válvula abierta está activo
+      - if:
+          condition:
+            binary_sensor.is_on: fc_valvula_abierta
+          then:
+            # Controla el LED asociado a la válvula abierta
+            - lambda: |-
+                static int led_timer = 0;
+                led_timer += 250;  // Incrementa el contador en 250 cada 250 ms
+                if (led_timer == 250) {
+                   id(led_valvula_abierta).turn_on();  // Enciende el LED durante los primeros 250 ms
+                   id(led_valvula_cerrada).turn_off();
+                } else {
+                  id(led_valvula_abierta).turn_off(); // Apaga el LED durante los siguientes 3750 ms
+                  if (led_timer == 4000) {
+                    led_timer = 0;  // Reinicia el contador cada 4000 ms 
+                  } 
+                }
+
+                if (id(porcentaje_valvula) != 100.0 && id(relay_1).state == 0 && id(relay_2).state == 0) {
+                  id(porcentaje_valvula) = 100.0;  // Asegura que el porcentaje sea 100% si está abierta
+                  id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+                }
+          else:
+            # Verifica si el sensor de la válvula cerrada está activo
+            - if:
+                condition:
+                  binary_sensor.is_on: fc_valvula_cerrada
+                then:
+                  # Controla el LED asociado a la válvula cerrada
+                  - lambda: |-
+                      static int ledC_timer = 0;
+                      ledC_timer += 250;  // Incrementa el contador en 250 cada 250 ms
+                      if (ledC_timer == 250) {
+                         id(led_valvula_cerrada).turn_on();
+                         id(led_valvula_abierta).turn_off();
+                      } else {
+                        id(led_valvula_cerrada).turn_off();   // Apaga el LED durante los siguientes 750 m
+                        if (ledC_timer == 1000) { 
+                          ledC_timer = 0;                       // Reinicia el contador cada 1000 ms 
+                        }
+                      } 
+                      if (id(porcentaje_valvula) != 0.0 && id(relay_1).state == 0 && id(relay_2).state == 0) {
+                        id(porcentaje_valvula) = 0.0;  // Asegura que el porcentaje sea 0% si está cerrada
+                        id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+                      }
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_off: fc_valvula_cerrada 
+              - binary_sensor.is_off: fc_valvula_abierta
+          then:
+            # Si ambos sensores están inactivos, enciende ambos LEDs
+            - output.turn_off: led_valvula_abierta
+            - output.turn_off: led_valvula_cerrada
+            - lambda: |-
+                if (id(porcentaje_valvula) != 50.0 && id(relay_1).state == 0 && id(relay_2).state == 0) {
+                  id(porcentaje_valvula) = 50.0;                                            // Asegura que el porcentaje sea 50% si es desconocida la posición de la válvula
+                  id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+                }
+# Ejecuta este bloque de código cada 2 segundos
+  - interval: 2s
+    then:
+      # Verifica si el rele de la válvula abierta está activo
+      - if:
+          condition:
+            switch.is_on: relay_1  # Réle abrir válvula ON?
+          then:  
+            - lambda: |-
+                if (id(porcentaje_valvula) < 100) {
+                  id(porcentaje_valvula) += (100.0 / 77.5); // Incrementa el porcentaje según el tiempo
+                  id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+                }
+          else:
+            - if:
+                condition:
+                  switch.is_on: relay_2  # Réle cerrar válvula ON?
+                then:
+                  - lambda: |-
+                      if (id(relay_2).state && id(porcentaje_valvula) > 0) {
+                        id(porcentaje_valvula) -= (100.0 / 77.5); // Decrementa el porcentaje según el tiempo
+                        id(apertura_valvula_sensor).publish_state((int) id(porcentaje_valvula));  // Publica el valor redondeado
+                      }
